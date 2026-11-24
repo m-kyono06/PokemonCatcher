@@ -1,0 +1,319 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 5c37d5a..ade4465 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -56,7 +56,7 @@ android {
+             signingConfig = signingConfigs.getByName("release")
+         }
+         getByName("debug") {
+-            applicationIdSuffix = ".dev"
++            applicationIdSuffix = ".catcher"
+             versionNameSuffix = "-lua-v14"
+             // The emulator core is far too slow without optimizations (audio slowdowns, flickering frames). Build the
+             // native code optimized, keeping debug symbols to read crash reports.
+diff --git a/app/src/main/java/me/magnum/melonds/ui/emulator/EmulatorActivity.kt b/app/src/main/java/me/magnum/melonds/ui/emulator/EmulatorActivity.kt
+index 8d36922..057b708 100644
+--- a/app/src/main/java/me/magnum/melonds/ui/emulator/EmulatorActivity.kt
++++ b/app/src/main/java/me/magnum/melonds/ui/emulator/EmulatorActivity.kt
+@@ -261,6 +261,14 @@ class EmulatorActivity : AppCompatActivity() {
+         activity = this,
+         rootProvider = { binding.root },
+         onResumeEmulator = { viewModel.resumeEmulator() },
++        onEncounters = {
++            binding.encounterSidebar.encounters = it
++            presentation?.encounterSidebar?.encounters = it
++        },
++        onIconAtlas = {
++            binding.encounterSidebar.atlas = it
++            presentation?.encounterSidebar?.atlas = it
++        },
+     )
+     private val gameSwitchButton = GameSwitchButton(
+         activity = this,
+@@ -679,6 +687,8 @@ class EmulatorActivity : AppCompatActivity() {
+                 display = secondaryDisplay,
+                 frameRenderCoordinator = frameRenderCoordinator,
+             ).apply {
++                encounterSidebar.encounters = binding.encounterSidebar.encounters
++                encounterSidebar.atlas = binding.encounterSidebar.atlas
+                 layoutView.apply {
+                     setLayoutComponentViewBuilderFactory(RuntimeLayoutComponentViewBuilderFactory())
+                     setFrontendInputHandler(frontendInputHandler)
+@@ -856,6 +866,8 @@ class EmulatorActivity : AppCompatActivity() {
+         }
+         val topView = binding.viewLayoutControls.getLayoutComponentView(topScreen)
+         val bottomView = binding.viewLayoutControls.getLayoutComponentView(bottomScreen)
++        binding.encounterSidebar.topScreen = topView?.getRect()?.let { android.graphics.Rect(it.x, it.y, it.right, it.bottom) }
++        binding.encounterSidebar.bottomScreen = bottomView?.getRect()?.let { android.graphics.Rect(it.x, it.y, it.right, it.bottom) }
+         mainScreenRenderer.updateScreenAreas(
+             topView?.getRect(),
+             bottomView?.getRect(),
+diff --git a/app/src/main/java/me/magnum/melonds/ui/emulator/lua/EncounterSidebar.kt b/app/src/main/java/me/magnum/melonds/ui/emulator/lua/EncounterSidebar.kt
+new file mode 100644
+index 0000000..571022e
+--- /dev/null
++++ b/app/src/main/java/me/magnum/melonds/ui/emulator/lua/EncounterSidebar.kt
+@@ -0,0 +1,103 @@
++package me.magnum.melonds.ui.emulator.lua
++
++import android.content.Context
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.Paint
++import android.graphics.Rect
++import android.view.View
++import org.json.JSONObject
++
++internal data class Encounters(val location: String, val groups: List<Group>) {
++    data class Group(val label: String, val species: List<Int>)
++
++    companion object {
++        const val PREFIX = "PokemonCatcher sidebar:"
++
++        fun parse(payload: String): Encounters? = runCatching {
++            val data = JSONObject(payload)
++            val groups = data.getJSONArray("groups")
++            require(groups.length() <= 10)
++            Encounters(data.getString("location").take(60), List(groups.length()) { index ->
++                val group = groups.getJSONArray(index)
++                require(group.length() in 2..494)
++                Group(group.getString(0).take(24), List(group.length() - 1) {
++                    group.getInt(it + 1).also { species -> require(species in 1..493) }
++                })
++            })
++        }.getOrNull()
++    }
++}
++
++class EncounterSidebar(context: Context, attrs: android.util.AttributeSet? = null) : View(context, attrs) {
++    internal var encounters: Encounters? = null
++        set(value) { field = value; invalidate() }
++    var atlas: Bitmap? = null
++        set(value) { field = value; invalidate() }
++    var topScreen: Rect? = null
++        set(value) { field = value; invalidate() }
++    var bottomScreen: Rect? = null
++        set(value) { field = value; invalidate() }
++
++    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
++    private val pixels = Paint().apply { isFilterBitmap = false }
++    private val source = Rect()
++    private val target = Rect()
++
++    override fun onDraw(canvas: Canvas) {
++        val data = encounters ?: return
++        val top = topScreen ?: return
++        val artwork = atlas ?: return
++        val left = Rect(0, maxOf(0, top.top), top.left.coerceIn(0, width), minOf(height, top.bottom))
++        val right = Rect(top.right.coerceIn(0, width), left.top, width, left.bottom)
++        val bottom = bottomScreen
++        val dry = data.groups.filterNot { it.label.contains("つりざお") || it.label == "なみのり" }
++        val wet = data.groups.filter { it !in dry }
++        val leftAvailable = left.width() >= 12 && left.height() >= 12 && (bottom == null || !Rect.intersects(left, bottom))
++        val rightAvailable = right.width() >= 12 && right.height() >= 12 && (bottom == null || !Rect.intersects(right, bottom))
++        if (leftAvailable) drawPanel(canvas, left, data.location, if (rightAvailable) dry else data.groups, artwork)
++        if (rightAvailable) drawPanel(canvas, right, if (leftAvailable) "" else data.location, if (leftAvailable) wet else data.groups, artwork)
++    }
++
++    private fun drawPanel(canvas: Canvas, area: Rect, location: String, groups: List<Encounters.Group>, artwork: Bitmap) {
++        val padding = minOf(8, area.width() / 8)
++        val usable = area.width() - padding * 2
++        val titleRows = groups.size + if (location.isEmpty()) 0 else 1
++        val maxCell = minOf(64, usable)
++        val cell = (maxCell downTo 1).firstOrNull { size ->
++            val columns = usable / size
++            val iconRows = groups.sumOf { (it.species.size + columns - 1) / columns }
++            padding * 2 + titleRows * (size / 2 + 3) + iconRows * size <= area.height()
++        } ?: return
++        val columns = usable / cell
++        val headingHeight = cell / 2 + 3
++        val x = area.left + padding
++        var y = area.top + padding
++        canvas.save()
++        canvas.clipRect(area)
++        fun heading(value: String) {
++            text.textSize = maxOf(1f, headingHeight - 3f)
++            val measured = text.measureText(value)
++            if (measured > usable) text.textSize *= usable / measured
++            canvas.drawText(value, x.toFloat(), y - text.ascent(), text)
++            y += headingHeight
++        }
++        if (location.isNotEmpty()) heading(location)
++        for ((label, species) in groups) {
++            heading(label)
++            species.forEachIndexed { index, id ->
++                val tile = id - 1
++                val sx = tile % 16 * 32
++                val sy = tile / 16 * 32
++                source.set(sx, sy, sx + 32, sy + 32)
++                val dx = x + index % columns * cell
++                val dy = y + index / columns * cell
++                target.set(dx, dy, dx + cell, dy + cell)
++                canvas.drawBitmap(artwork, source, target, pixels)
++            }
++            y += (species.size + columns - 1) / columns * cell
++        }
++        canvas.restore()
++    }
++}
+diff --git a/app/src/main/java/me/magnum/melonds/ui/emulator/lua/LuaScriptController.kt b/app/src/main/java/me/magnum/melonds/ui/emulator/lua/LuaScriptController.kt
+index 221af57..d2d4429 100644
+--- a/app/src/main/java/me/magnum/melonds/ui/emulator/lua/LuaScriptController.kt
++++ b/app/src/main/java/me/magnum/melonds/ui/emulator/lua/LuaScriptController.kt
+@@ -3,6 +3,8 @@ package me.magnum.melonds.ui.emulator.lua
+ import android.annotation.SuppressLint
+ import android.content.Context
+ import android.content.Intent
++import android.graphics.Bitmap
++import android.graphics.BitmapFactory
+ import android.graphics.Typeface
+ import android.graphics.drawable.GradientDrawable
+ import android.net.Uri
+@@ -48,10 +50,12 @@ import kotlin.math.min
+  *
+  * Must be created during the activity's initialisation (it registers an activity result launcher).
+  */
+-class LuaScriptController(
++internal class LuaScriptController(
+     private val activity: AppCompatActivity,
+     private val rootProvider: () -> ViewGroup,
+     private val onResumeEmulator: () -> Unit,
++    private val onEncounters: (Encounters?) -> Unit,
++    private val onIconAtlas: (Bitmap?) -> Unit,
+ ) {
+ 
+     private companion object {
+@@ -108,6 +112,32 @@ class LuaScriptController(
+     private var rootLayoutListener: View.OnLayoutChangeListener? = null
+     private var lastRootSize = 0 to 0
+ 
++    private val iconPicker = activity.registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
++        if (uri != null) {
++            val atlas = readAtlas(uri)
++            if (atlas == null) {
++                Toast.makeText(activity, "アイコン画像は512×992ピクセルのPNGを選んでください", Toast.LENGTH_LONG).show()
++            } else {
++                runCatching {
++                    activity.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
++                    preferences.edit { putString("encounter_icon_atlas", uri.toString()) }
++                }
++                onIconAtlas(atlas)
++            }
++        }
++        onResumeEmulator()
++    }
++
++    private fun readAtlas(uri: Uri): Bitmap? = runCatching {
++        val resolver = activity.contentResolver
++        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
++        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
++        if (bounds.outWidth != 512 || bounds.outHeight != 992 || bounds.outMimeType != "image/png") {
++            return@runCatching null
++        }
++        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
++    }.getOrNull()
++
+     private val scriptPicker = activity.registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+         CrashLogger.note("Selettore script chiuso, file: $uri")
+         if (uri != null) {
+@@ -125,6 +155,7 @@ class LuaScriptController(
+      * Starts polling the script status and output. Call from onCreate().
+      */
+     fun attach() {
++        preferences.getString("encounter_icon_atlas", null)?.let { onIconAtlas(readAtlas(Uri.parse(it))) }
+         MelonEmulator.setLuaOverlayOpacity(preferences.getInt(KEY_OVERLAY_OPACITY, DEFAULT_OVERLAY_OPACITY) / 100f)
+         activity.lifecycleScope.launch {
+             activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
+@@ -160,6 +191,7 @@ class LuaScriptController(
+         if (scriptRunning) {
+             labels += activity.getString(R.string.lua_stop_script)
+             actions += {
++                onEncounters(null)
+                 MelonEmulator.stopLuaScript()
+                 onResumeEmulator()
+             }
+@@ -176,6 +208,9 @@ class LuaScriptController(
+         labels += activity.getString(R.string.lua_appearance)
+         actions += { showAppearanceDialog() }
+ 
++        labels += "PokemonCatcher アイコン画像を読み込む"
++        actions += { iconPicker.launch(arrayOf("image/png")) }
++
+         labels += activity.getString(R.string.lua_console)
+         actions += { showConsole() }
+ 
+@@ -220,6 +255,7 @@ class LuaScriptController(
+         val workDir = File(baseDir, "lua/$folderName").apply { mkdirs() }
+ 
+         CrashLogger.note("Caricamento script '$name' (${source.size} byte), cartella ${workDir.absolutePath}")
++        onEncounters(null)
+         MelonEmulator.loadLuaScript(name, source, workDir.absolutePath)
+         CrashLogger.note("Script inviato al motore Lua")
+         preferences.edit {
+@@ -241,7 +277,11 @@ class LuaScriptController(
+     private fun poll() {
+         val output = MelonEmulator.pollLuaOutput()
+         if (output.isNotEmpty()) {
+-            val text = String(output, Charsets.UTF_8)
++            val text = String(output, Charsets.UTF_8).lineSequence().filterNot { line ->
++                if (!line.startsWith(Encounters.PREFIX)) return@filterNot false
++                Encounters.parse(line.removePrefix(Encounters.PREFIX))?.let(onEncounters)
++                true
++            }.joinToString("\n")
+             console.append(text)
+             if (console.length > MAX_CONSOLE_LENGTH) {
+                 console.delete(0, console.length - MAX_CONSOLE_LENGTH)
+@@ -265,6 +305,7 @@ class LuaScriptController(
+         val running = MelonEmulator.getLuaStatus() == STATUS_RUNNING
+         if (running != scriptRunning) {
+             CrashLogger.note("Stato script: ${if (running) "in esecuzione" else "fermo"} (codice ${MelonEmulator.getLuaStatus()})")
++            if (!running) onEncounters(null)
+             scriptRunning = running
+             updateKeysBar()
+         }
+diff --git a/app/src/main/java/me/magnum/melonds/ui/emulator/render/ExternalPresentation.kt b/app/src/main/java/me/magnum/melonds/ui/emulator/render/ExternalPresentation.kt
+index c289bea..d504a63 100644
+--- a/app/src/main/java/me/magnum/melonds/ui/emulator/render/ExternalPresentation.kt
++++ b/app/src/main/java/me/magnum/melonds/ui/emulator/render/ExternalPresentation.kt
+@@ -31,6 +31,7 @@ class ExternalPresentation(
+     private val frameRenderCoordinator: FrameRenderCoordinator,
+ ) : Presentation(context, display) {
+ 
++    internal val encounterSidebar = me.magnum.melonds.ui.emulator.lua.EncounterSidebar(context)
+     val layoutView = RuntimeLayoutView(context)
+     private val container = FrameLayout(context)
+     private val pauseOverlay = View(context)
+@@ -56,6 +57,7 @@ class ExternalPresentation(
+         surfaceView.updateRendererConfiguration(currentRendererConfiguration)
+ 
+         container.addView(surfaceView)
++        container.addView(encounterSidebar, FrameLayout.LayoutParams(-1, -1))
+         container.addView(layoutView)
+         container.addView(pauseOverlay)
+ 
+@@ -96,6 +98,8 @@ class ExternalPresentation(
+         }
+         val topView = layoutView.getLayoutComponentView(topScreen)
+         val bottomView = layoutView.getLayoutComponentView(bottomScreen)
++        encounterSidebar.topScreen = topView?.getRect()?.let { android.graphics.Rect(it.x, it.y, it.right, it.bottom) }
++        encounterSidebar.bottomScreen = bottomView?.getRect()?.let { android.graphics.Rect(it.x, it.y, it.right, it.bottom) }
+         emulatorRenderer.updateScreenAreas(
+             topScreenRect = topView?.getRect(),
+             bottomScreenRect = bottomView?.getRect(),
+diff --git a/app/src/main/res/layout/activity_emulator.xml b/app/src/main/res/layout/activity_emulator.xml
+index 5dc1bed..cf99efd 100644
+--- a/app/src/main/res/layout/activity_emulator.xml
++++ b/app/src/main/res/layout/activity_emulator.xml
+@@ -14,6 +14,11 @@
+             android:layout_width="match_parent"
+             android:layout_height="match_parent"/>
+ 
++    <me.magnum.melonds.ui.emulator.lua.EncounterSidebar
++            android:id="@+id/encounter_sidebar"
++            android:layout_width="match_parent"
++            android:layout_height="match_parent" />
++
+     <me.magnum.melonds.ui.emulator.RuntimeLayoutView
+             android:id="@+id/view_layout_controls"
+             android:layout_width="match_parent"
