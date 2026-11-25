@@ -818,9 +818,8 @@ local function publish()
             local entries = { quoted(group[1]) }
             for member = 2, #group do
                 local species = group[member]
-                if not caught(dex, species) then
-                    entries[#entries + 1] = tostring(species)
-                end
+                -- A negative species ID keeps its slot and marks it as caught.
+                entries[#entries + 1] = tostring(caught(dex, species) and -species or species)
             end
             if #entries > 1 then
                 groups[#groups + 1] = "[" .. table.concat(entries, ",") .. "]"

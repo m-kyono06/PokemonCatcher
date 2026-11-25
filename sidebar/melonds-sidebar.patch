@@ -50,20 +50,23 @@ index 8d36922..057b708 100644
              bottomView?.getRect(),
 diff --git a/app/src/main/java/me/magnum/melonds/ui/emulator/lua/EncounterSidebar.kt b/app/src/main/java/me/magnum/melonds/ui/emulator/lua/EncounterSidebar.kt
 new file mode 100644
-index 0000000..571022e
+index 0000000..4b0b6aa
 --- /dev/null
 +++ b/app/src/main/java/me/magnum/melonds/ui/emulator/lua/EncounterSidebar.kt
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,132 @@
 +package me.magnum.melonds.ui.emulator.lua
 +
 +import android.content.Context
 +import android.graphics.Bitmap
++import android.graphics.BitmapFactory
 +import android.graphics.Canvas
 +import android.graphics.Color
 +import android.graphics.Paint
 +import android.graphics.Rect
 +import android.view.View
++import me.magnum.melonds.R
 +import org.json.JSONObject
++import kotlin.math.abs
 +
 +internal data class Encounters(val location: String, val groups: List<Group>) {
 +    data class Group(val label: String, val species: List<Int>)
@@ -79,7 +82,7 @@ index 0000000..571022e
 +                val group = groups.getJSONArray(index)
 +                require(group.length() in 2..494)
 +                Group(group.getString(0).take(24), List(group.length() - 1) {
-+                    group.getInt(it + 1).also { species -> require(species in 1..493) }
++                    group.getInt(it + 1).also { species -> require(species in 1..493 || species in -493..-1) }
 +                })
 +            })
 +        }.getOrNull()
@@ -96,9 +99,13 @@ index 0000000..571022e
 +    var bottomScreen: Rect? = null
 +        set(value) { field = value; invalidate() }
 +
++    private val columns = 2
 +    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
 +    private val pixels = Paint().apply { isFilterBitmap = false }
++    private val caughtPixels = Paint(pixels).apply { alpha = 102 }
++    private val caughtBadge by lazy { BitmapFactory.decodeResource(resources, R.drawable.encounter_poke_ball) }
 +    private val source = Rect()
++    private val badgeTarget = Rect()
 +    private val target = Rect()
 +
 +    override fun onDraw(canvas: Canvas) {
@@ -112,21 +119,37 @@ index 0000000..571022e
 +        val wet = data.groups.filter { it !in dry }
 +        val leftAvailable = left.width() >= 12 && left.height() >= 12 && (bottom == null || !Rect.intersects(left, bottom))
 +        val rightAvailable = right.width() >= 12 && right.height() >= 12 && (bottom == null || !Rect.intersects(right, bottom))
-+        if (leftAvailable) drawPanel(canvas, left, data.location, if (rightAvailable) dry else data.groups, artwork)
-+        if (rightAvailable) drawPanel(canvas, right, if (leftAvailable) "" else data.location, if (leftAvailable) wet else data.groups, artwork)
++        val leftGroups = if (rightAvailable) dry else data.groups
++        val rightGroups = if (leftAvailable) wet else data.groups
++        val rightLocation = if (leftAvailable) "" else data.location
++        val leftCell = if (leftAvailable) fittingCell(left, data.location, leftGroups) else null
++        val rightCell = if (rightAvailable) fittingCell(right, rightLocation, rightGroups) else null
++        val cell = listOfNotNull(leftCell, rightCell).minOrNull() ?: return
++        if (leftCell != null) drawPanel(canvas, left, data.location, leftGroups, artwork, cell)
++        if (rightCell != null) drawPanel(canvas, right, rightLocation, rightGroups, artwork, cell)
 +    }
 +
-+    private fun drawPanel(canvas: Canvas, area: Rect, location: String, groups: List<Encounters.Group>, artwork: Bitmap) {
++    private fun fittingCell(area: Rect, location: String, groups: List<Encounters.Group>): Int? {
++        if (location.isEmpty() && groups.isEmpty()) return null
 +        val padding = minOf(8, area.width() / 8)
 +        val usable = area.width() - padding * 2
 +        val titleRows = groups.size + if (location.isEmpty()) 0 else 1
-+        val maxCell = minOf(64, usable)
-+        val cell = (maxCell downTo 1).firstOrNull { size ->
-+            val columns = usable / size
-+            val iconRows = groups.sumOf { (it.species.size + columns - 1) / columns }
++        val iconRows = groups.sumOf { (it.species.size + columns - 1) / columns }
++        return (usable / columns downTo 1).firstOrNull { size ->
 +            padding * 2 + titleRows * (size / 2 + 3) + iconRows * size <= area.height()
-+        } ?: return
-+        val columns = usable / cell
++        }
++    }
++
++    private fun drawPanel(
++        canvas: Canvas,
++        area: Rect,
++        location: String,
++        groups: List<Encounters.Group>,
++        artwork: Bitmap,
++        cell: Int,
++    ) {
++        val padding = minOf(8, area.width() / 8)
++        val usable = area.width() - padding * 2
 +        val headingHeight = cell / 2 + 3
 +        val x = area.left + padding
 +        var y = area.top + padding
@@ -143,14 +166,20 @@ index 0000000..571022e
 +        for ((label, species) in groups) {
 +            heading(label)
 +            species.forEachIndexed { index, id ->
-+                val tile = id - 1
++                val caught = id < 0
++                val tile = abs(id) - 1
 +                val sx = tile % 16 * 32
 +                val sy = tile / 16 * 32
 +                source.set(sx, sy, sx + 32, sy + 32)
 +                val dx = x + index % columns * cell
 +                val dy = y + index / columns * cell
 +                target.set(dx, dy, dx + cell, dy + cell)
-+                canvas.drawBitmap(artwork, source, target, pixels)
++                canvas.drawBitmap(artwork, source, target, if (caught) caughtPixels else pixels)
++                if (caught) {
++                    val badgeSize = maxOf(1, cell * 3 / 8)
++                    badgeTarget.set(target.right - badgeSize, target.bottom - badgeSize, target.right, target.bottom)
++                    canvas.drawBitmap(caughtBadge, null, badgeTarget, pixels)
++                }
 +            }
 +            y += (species.size + columns - 1) / columns * cell
 +        }
@@ -301,6 +330,23 @@ index c289bea..d504a63 100644
          emulatorRenderer.updateScreenAreas(
              topScreenRect = topView?.getRect(),
              bottomScreenRect = bottomView?.getRect(),
+diff --git a/app/src/main/res/drawable-nodpi/encounter_poke_ball.png b/app/src/main/res/drawable-nodpi/encounter_poke_ball.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..cad49c39e98cc96ea94008819c66101d98f50b83
+GIT binary patch
+literal 386
+zcmV-|0e$|7P)<h;3K|Lk000e1NJLTq000sI000sQ1^@s6R?d!B0003=Nkl<Zc$}@2
+zt#^Yk6vZ!`3i=;lE2$%Hb*ls!*GX(0NbDSQ*vjF8D-t*AGKs_@=PEOi@*SX}_ne&M
+zg!g{D`ykPT5KxH_qI|$P*HrtPIRN*zi!T@hwSGl}5HSbnt119m-Ul#!0y#pC1?>(1
+zv$g~K`UGPA$gu(ghA@3C_*rSTZ4dj>RFW?zRz<g_<$e0q)&OHjqnBCJ0pOB7pD?Z_
+z|C93u08+yQvKpQvH{IN91Fy$g31}dxVFIYS9;Jqf^wFOW>f>}eAV~_i><h6`E0O^i
+z9aIxSfDj@ahvK*7vI@r90GHBPo3=%eWel8it!=hPeOwuXZ4o4i^wG>JKpcK!zkeTA
+z1jxUeT?*`M17Y~t26)t0!fqu;6rJ1iHaWCG5aZ1vvvzI|`+dj+)W85B2x28Dip~I5
+gt`QY*thtNrAI@!+{)`5L<p2Nx07*qoM6N<$f-#|?z5oCK
+
+literal 0
+HcmV?d00001
+
 diff --git a/app/src/main/res/layout/activity_emulator.xml b/app/src/main/res/layout/activity_emulator.xml
 index 5dc1bed..cf99efd 100644
 --- a/app/src/main/res/layout/activity_emulator.xml
