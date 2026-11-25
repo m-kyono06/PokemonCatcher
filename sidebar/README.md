@@ -11,9 +11,9 @@
 ## アイコン画像を読み込む
 
 1. [改修版APK（ARM64）](./melonds-pokemoncatcher-v14-arm64.apk) をインストールします。すでに横2匹表示に対応した改修版を使用中なら、Luaの更新だけでハートゴールドにも対応できます。
-2. 同梱の `pokemon-icons-gen4.png` と `soulsilver_jp_sidebar.lua` を端末へコピーします。
+2. 同梱の `pokemon-icons-gen4.png` と [`hgss_jp_sidebar.lua`](./hgss_jp_sidebar.lua) を端末へコピーします。
 3. 改修版のポーズメニューで **Lua scripts → PokemonCatcher アイコン画像を読み込む** を選び、`pokemon-icons-gen4.png` を読み込みます。
-4. 日本語版のハートゴールドまたはソウルシルバーを起動し、**Lua scripts → Load script…** で同梱の `soulsilver_jp_sidebar.lua` を読み込みます。
+4. 日本語版のハートゴールドまたはソウルシルバーを起動し、**Lua scripts → Load script…** で同梱の [`hgss_jp_sidebar.lua`](./hgss_jp_sidebar.lua) を読み込みます。
 
 アイコンの出典は [PokéAPI Sprites の第4世代アイコン](https://github.com/PokeAPI/sprites/tree/master/sprites/pokemon/versions/generation-iv/icons) です。全国図鑑番号1〜493のPNGを1枚に並べています。端末でのアイコン表示はオフラインで動作します。
 
